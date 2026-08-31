@@ -18,6 +18,8 @@ require_relative "json_db/query/index_manager"
 require_relative "json_db/query/relation"
 require_relative "json_db/associations/reflection"
 require_relative "json_db/associations/belongs_to"
+require_relative "json_db/associations/has_many"
+require_relative "json_db/associations/has_one"
 
 # A zero-database ORM that stores every record as its own JSON document.
 #
