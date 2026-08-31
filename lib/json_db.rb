@@ -16,6 +16,7 @@ require_relative "json_db/storage/atomic_writer"
 require_relative "json_db/storage/file_adapter"
 require_relative "json_db/query/index_manager"
 require_relative "json_db/query/relation"
+require_relative "json_db/associations/reflection"
 
 # A zero-database ORM that stores every record as its own JSON document.
 #
