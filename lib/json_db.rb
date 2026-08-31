@@ -11,6 +11,7 @@ require "active_support/core_ext/object/deep_dup"
 require "active_support/core_ext/string/inflections"
 
 require_relative "json_db/version"
+require_relative "json_db/errors"
 
 # A zero-database ORM that stores every record as its own JSON document.
 #
