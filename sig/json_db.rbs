@@ -1,0 +1,329 @@
+# Type signatures for the public surface of json-db.
+#
+# Validate with:  rbs -I sig validate
+
+module JsonDb
+  VERSION: String
+  DEFAULT_STORAGE_ROOT: String
+
+  # An attribute name, accepted as a Symbol or String almost everywhere.
+  type attribute_name = Symbol | String
+
+  # A stored document: string keys, JSON-compatible values.
+  type document = Hash[String, untyped]
+
+  # Conditions accepted by `where`: an exact value, a set, a range,
+  # a pattern, or a predicate.
+  type condition = untyped | Array[untyped] | Range[untyped] | Regexp | ^(untyped) -> boolish
+  type conditions = Hash[attribute_name, condition]
+
+  type direction = :asc | :desc
+
+  # :hex, :uuid, :sequence, or anything callable returning an id.
+  type id_generator = :hex | :uuid | :sequence | ^() -> untyped | ^(untyped) -> untyped
+
+  type dependent_option = :destroy | :nullify | :restrict | nil
+
+  self.@storage_root: String?
+
+  def self.storage_root: () -> String
+  def self.storage_root=: (String) -> String
+  def self.configure: () { (untyped) -> void } -> untyped
+
+  class Error < StandardError
+  end
+
+  class RecordNotFound < Error
+    attr_reader model: untyped
+    attr_reader primary_key: Symbol?
+    attr_reader id: untyped
+    def initialize: (?String? message, ?model: untyped, ?primary_key: Symbol?, ?id: untyped) -> void
+  end
+
+  class RecordInvalid < Error
+    attr_reader record: Base?
+    def initialize: (?Base? record) -> void
+  end
+
+  class RecordNotSaved < Error
+    attr_reader record: Base?
+    def initialize: (?String message, ?record: Base?) -> void
+  end
+
+  class InvalidId < Error
+  end
+
+  class ConfigurationError < Error
+  end
+
+  class AssociationError < Error
+  end
+
+  class SerializationError < Error
+  end
+
+  module Storage
+    # Writes a file via a temporary file plus an atomic rename.
+    module AtomicWriter
+      FILE_MODE: Integer
+
+      def self.write: (String path, untyped content, ?mode: Integer) -> Integer
+      def self.delete: (String path) -> bool
+    end
+
+    # Owns one collection directory and maps ids to `<id>.json` documents.
+    class FileAdapter
+      EXTENSION: String
+      SEQUENCE_FILE: String
+      RESERVED_PREFIX: String
+      ID_PATTERN: Regexp
+
+      attr_reader dir: String
+      attr_reader indent: Integer
+
+      def initialize: (String dir, ?indent: Integer) -> void
+      def path_for: (untyped id) -> String
+      def exist?: (untyped id) -> bool
+      def read: (untyped id) -> document?
+      def write: (untyped id, document attributes) -> document
+      def delete: (untyped id) -> bool
+      def ids: () -> Array[String]
+      def count: () -> Integer
+      def each_document: () { (String, document) -> void } -> void
+                       | () -> Enumerator[[String, document], void]
+      def next_sequence_value: () -> Integer
+      def with_lock: [T] (String name) { () -> T } -> T
+      def destroy_all!: () -> untyped
+      def dump: (untyped attributes) -> String
+      def parse: (String raw, ?String? source) -> untyped
+    end
+  end
+
+  module Query
+    # Maintains `_indexes.json` for a collection.
+    class IndexManager
+      FILENAME: String
+      LOCK_FILE: String
+
+      type index_file = Hash[String, Hash[String, Array[String]]]
+
+      attr_reader adapter: Storage::FileAdapter
+      attr_reader attributes: Array[Symbol]
+      attr_reader model: singleton(Base)?
+
+      def initialize: (Storage::FileAdapter adapter,
+                       Array[attribute_name] attributes,
+                       ?model: singleton(Base)?) -> void
+      def enabled?: () -> bool
+      def indexed?: (attribute_name attribute) -> bool
+      def path: () -> String
+      def read: () -> index_file
+      # Returns nil when the index cannot answer the question (full scan needed).
+      def ids_for: (attribute_name attribute, condition value) -> Array[String]?
+      def update: (untyped id, Hash[Symbol, untyped] old_values, Hash[Symbol, untyped] new_values) -> void
+      def remove: (untyped id, ?Hash[Symbol, untyped]? values) -> void
+      def rebuild!: () -> index_file
+      def clear!: () -> bool
+    end
+
+    # A lazy, chainable, Enumerable query over one collection.
+    class Relation
+      include Enumerable[Base]
+
+      MATCHERS: Array[Class]
+
+      attr_reader klass: singleton(Base)
+      attr_reader where_values: conditions
+      attr_reader order_values: Array[[Symbol, direction]]
+      attr_reader limit_value: Integer?
+      attr_reader offset_value: Integer?
+
+      def initialize: (singleton(Base) klass,
+                       ?where_values: conditions,
+                       ?order_values: Array[[Symbol, direction]],
+                       ?limit_value: Integer?,
+                       ?offset_value: Integer?,
+                       ?null: bool) -> void
+
+      def where: (?conditions conditions) -> Relation
+      def order: (*attribute_name fields, **direction directions) -> Relation
+      def reverse_order: () -> Relation
+      def limit: (Integer? value) -> Relation
+      def offset: (Integer? value) -> Relation
+      # A relation that matches nothing and never touches the filesystem.
+      def none: () -> Relation
+      def null?: () -> bool
+      def unscoped: () -> Relation
+
+      def each: () { (Base) -> void } -> Relation
+              | () -> Enumerator[Base, void]
+      def to_a: () -> Array[Base]
+      def records: () -> Array[Base]
+      def loaded?: () -> bool
+      def reload: () -> Relation
+
+      def first: (?Integer? amount) -> (Base | Array[Base] | nil)
+      def last: (?Integer? amount) -> (Base | Array[Base] | nil)
+      def find_by: (?conditions conditions) -> Base?
+      def find_by!: (?conditions conditions) -> Base
+      def count: () -> Integer
+      def size: () -> Integer
+      def empty?: () -> bool
+      def any?: (*untyped args) ?{ (Base) -> boolish } -> bool
+      def exists?: (?conditions conditions) -> bool
+      def pluck: (*attribute_name fields) -> Array[untyped]
+      def ids: () -> Array[untyped]
+      def destroy_all: () -> Array[Base]
+      def update_all: (?Hash[attribute_name, untyped] attributes) -> Integer
+    end
+  end
+
+  module Associations
+    # Value object describing one declared association; resolves its target lazily.
+    class Reflection
+      attr_reader name: Symbol
+      attr_reader macro: (:belongs_to | :has_many | :has_one)
+      attr_reader owner: singleton(Base)
+      attr_reader class_name: (String | Class)
+      attr_reader foreign_key: Symbol
+      attr_reader dependent: dependent_option
+
+      def initialize: (name: attribute_name,
+                       macro: (:belongs_to | :has_many | :has_one),
+                       owner: singleton(Base),
+                       class_name: (String | Class),
+                       foreign_key: attribute_name,
+                       ?dependent: dependent_option) -> void
+
+      def collection?: () -> bool
+      def klass: () -> singleton(Base)
+    end
+
+    module BelongsTo
+      module ClassMethods
+        def belongs_to: (attribute_name name,
+                         ?class_name: (String | Class | nil),
+                         ?foreign_key: attribute_name?,
+                         ?optional: bool,
+                         ?type: Symbol) -> Reflection
+      end
+    end
+
+    module HasMany
+      module ClassMethods
+        def has_many: (attribute_name name,
+                       ?class_name: (String | Class | nil),
+                       ?foreign_key: attribute_name?,
+                       ?dependent: dependent_option) -> Reflection
+      end
+    end
+
+    module HasOne
+      module ClassMethods
+        def has_one: (attribute_name name,
+                      ?class_name: (String | Class | nil),
+                      ?foreign_key: attribute_name?,
+                      ?dependent: dependent_option) -> Reflection
+      end
+    end
+  end
+
+  # The class user models inherit from.
+  class Base
+    extend Associations::BelongsTo::ClassMethods
+    extend Associations::HasMany::ClassMethods
+    extend Associations::HasOne::ClassMethods
+
+    SEQUENCE_ID_DIGITS: Integer
+
+    @persisted: bool
+    @destroyed: bool
+    @attributes: untyped
+    @association_cache: Hash[Symbol, untyped]
+
+    # -- configuration ---------------------------------------------------
+    def self.storage_root: () -> String
+    def self.storage_root=: (String) -> String
+    def self.collection_name: () -> String
+    def self.collection_name=: (String) -> String
+    def self.primary_key: () -> Symbol
+    def self.primary_key=: (attribute_name) -> Symbol
+    def self.id_generator: () -> id_generator
+    def self.id_generator=: (id_generator) -> id_generator
+    def self.json_indent: () -> Integer
+    def self.json_indent=: (Integer) -> Integer
+    def self.indexed_attributes: () -> Array[Symbol]
+    def self.indexed_attributes=: (Array[Symbol]) -> Array[Symbol]
+    def self.reflections: () -> Hash[Symbol, Associations::Reflection]
+
+    def self.index: (*attribute_name names) -> Array[Symbol]
+    def self.add_reflection: (Associations::Reflection) -> Associations::Reflection
+    def self.reflect_on: (attribute_name name) -> Associations::Reflection
+
+    # -- storage ---------------------------------------------------------
+    def self.storage_path: () -> String
+    def self.adapter: () -> Storage::FileAdapter
+    def self.index_manager: () -> Query::IndexManager
+    def self.rebuild_index!: () -> untyped
+
+    # -- querying --------------------------------------------------------
+    def self.all: () -> Query::Relation
+    def self.where: (?conditions conditions) -> Query::Relation
+    def self.order: (*attribute_name fields, **direction directions) -> Query::Relation
+    def self.limit: (Integer? value) -> Query::Relation
+    def self.offset: (Integer? value) -> Query::Relation
+    def self.find: (untyped id) -> Base
+    def self.find_by_id: (untyped id) -> Base?
+    def self.find_by: (?conditions conditions) -> Base?
+    def self.find_by!: (?conditions conditions) -> Base
+    def self.pluck: (*attribute_name fields) -> Array[untyped]
+    def self.count: () -> Integer
+    def self.first: (?Integer? amount) -> (Base | Array[Base] | nil)
+    def self.last: (?Integer? amount) -> (Base | Array[Base] | nil)
+    def self.exists?: (?(untyped | conditions | nil) id_or_conditions) -> bool
+    def self.instantiate: (document document) -> Base
+
+    # -- writing ---------------------------------------------------------
+    def self.new: (?Hash[attribute_name, untyped] attributes) -> Base
+    def self.create: (?Hash[attribute_name, untyped] attributes) -> Base
+    def self.create!: (?Hash[attribute_name, untyped] attributes) -> Base
+    def self.destroy_all: () -> Array[Base]
+    def self.delete_all!: () -> untyped
+    def self.generate_id: () -> String
+
+    def initialize: (?Hash[attribute_name, untyped] attributes) -> void
+
+    # -- identity --------------------------------------------------------
+    def id: () -> untyped
+    def id=: (untyped value) -> untyped
+    def to_key: () -> Array[untyped]?
+    def to_param: () -> String?
+    def persisted?: () -> bool
+    def new_record?: () -> bool
+    def destroyed?: () -> bool
+    def []: (attribute_name name) -> untyped
+    def []=: (attribute_name name, untyped value) -> untyped
+    def ==: (untyped other) -> bool
+    def eql?: (untyped other) -> bool
+    def hash: () -> Integer
+
+    # -- persistence -----------------------------------------------------
+    def save: (?validate: bool) -> bool
+    def save!: (?validate: bool) -> bool
+    def update: (?Hash[attribute_name, untyped] attributes) -> bool
+    def update!: (?Hash[attribute_name, untyped] attributes) -> bool
+    def destroy: () -> bool
+    def destroy!: () -> bool
+    def reload: () -> Base
+    def as_json: (*untyped) -> document
+    def to_json: (*untyped) -> String
+    def storage_path: () -> String
+
+    private
+
+    def association_cache: () -> Hash[Symbol, untyped]
+    def initialize_from_document: (document document) -> Base
+    def create_or_update: () -> bool
+    def indexed_values: (?before: bool) -> Hash[Symbol, untyped]
+  end
+end
